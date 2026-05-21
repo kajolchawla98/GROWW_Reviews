@@ -63,3 +63,10 @@ def root():
         "version": settings.APP_VERSION,
         "docs": "/docs",
     }
+
+
+# ── Top-level health alias (for Railway healthcheck) ─────────────────
+@app.get("/health", tags=["System"])
+def health_alias():
+    """Alias so Railway's healthcheck works without the /api/v1 prefix."""
+    return {"status": "healthy", "version": settings.APP_VERSION}
