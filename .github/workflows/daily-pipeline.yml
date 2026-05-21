@@ -1,0 +1,45 @@
+name: Daily Pipeline Run
+
+on:
+  schedule:
+    # Runs every day at 10:00 AM UTC (adjust timezone as needed)
+    # Use https://crontab.guru/ to convert to your timezone
+    - cron: '0 10 * * *'
+  workflow_dispatch: # Allow manual trigger from GitHub Actions UI
+
+jobs:
+  run-pipeline:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Trigger Pipeline
+        id: trigger
+        run: |
+          # Trigger the pipeline via API
+          response=$(curl -X POST ${{ secrets.API_URL }}/api/v1/pipeline/run \
+            -H "Content-Type: application/json" \
+            -d '{"app_id": "com.nextbillion.groww", "weeks": 4}' \
+            -w "\nHTTP_STATUS:%{http_code}" \
+            -s)
+          
+          echo "Response: $response"
+          
+          # Extract HTTP status
+          http_status=$(echo "$response" | grep "HTTP_STATUS" | cut -d: -f2)
+          
+          if [ "$http_status" != "202" ]; then
+            echo "::error::Pipeline trigger failed with HTTP status: $http_status"
+            exit 1
+          fi
+          
+          echo "::notice::Pipeline triggered successfully"
+        env:
+          API_URL: ${{ secrets.API_URL }}
+      
+      - name: Wait for Pipeline Completion
+        if: success()
+        run: |
+          # Extract pipeline_run_id from previous step
+          # In production, you might want to poll the status endpoint
+          echo "Pipeline is running in the background"
+          echo "Check your dashboard for results"
