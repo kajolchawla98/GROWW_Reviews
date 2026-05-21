@@ -70,6 +70,38 @@ NON_LATIN_PATTERN = re.compile(
     r"]"
 )
 
+# Hinglish / romanised Hindi words commonly seen in GROWW reviews
+_HINGLISH_WORDS = {
+    "bilkul", "farzi", "bakwas", "bekar", "bahut", "achha", "accha",
+    "acha", "bura", "kharab", "ganda", "sahi", "galat", "theek",
+    "thik", "nahi", "nhi", "hai", "hain", "tha", "thi", "the",
+    "mera", "meri", "mere", "mujhe", "humara", "humari", "aapka",
+    "aapki", "unka", "unki", "yeh", "yeh", "ye", "vo", "woh",
+    "karo", "karna", "kiya", "kiye", "kar", "raha", "rahi",
+    "rahe", "hoga", "hogi", "hoge", "liya", "liye", "diya",
+    "diye", "dena", "lena", "milta", "milti", "milte", "chahiye",
+    "lagta", "lagti", "lagte", "paise", "paisa", "rupaye", "rupee",
+    "baar", "bar", "ek", "do", "teen", "char", "paanch", "das",
+    "aur", "lekin", "magar", "kyunki", "isliye", "phir", "fir",
+    "abhi", "pehle", "baad", "jab", "tab", "kab", "kahan", "kyun",
+    "kya", "kaisa", "kaisi", "kaise", "kitna", "kitni", "kitne",
+    "bohot", "bohat", "bahot", "sirf", "bas", "toh", "bhi", "hi",
+    "se", "ko", "ka", "ki", "ke", "pe", "par", "mein", "main",
+    "avagat", "gaflat", "thop", "karavaya", "jawab", "retailer",
+}
+
+# Abusive / derogatory / NSFW words to filter out
+_ABUSIVE_WORDS = {
+    "sex", "porn", "nude", "naked", "fuck", "shit", "bastard",
+    "bitch", "asshole", "dick", "cock", "pussy", "whore", "slut",
+    "rape", "kill", "murder", "terrorist", "chutiya", "madarchod",
+    "bhenchod", "gaandu", "harami", "kamina", "randi", "saala",
+    "bhosdike", "lund", "chut", "gand",
+}
+
+# Repetition pattern — catches "RR er RR r dear er RR rte tr RR erererere"
+REPETITION_PATTERN = re.compile(r'\b(\w{1,4})\b(?:\s+\1\b){2,}')
+
 # Common English words — used to verify a review has real English content
 _COMMON_ENGLISH = {
     "the", "is", "are", "was", "were", "be", "been", "being",
@@ -153,31 +185,48 @@ class ReviewIngestionAgent:
 
         # Normalize and filter
         records: List[ReviewRecord] = []
-        stats = {"emoji_only": 0, "non_english": 0, "too_short": 0, "gibberish": 0, "valid": 0}
+        stats = {
+            "non_english": 0, "too_short": 0, "gibberish": 0,
+            "hinglish": 0, "abusive": 0, "repetition": 0, "valid": 0
+        }
 
         for raw in dated:
             try:
                 record = self._to_review_record(raw)
 
-                # Skip if non-English characters detected (Hindi, Arabic, etc.)
+                # 1. Reject non-Latin scripts (Hindi Devanagari, Arabic, etc.)
                 if self._has_non_latin(record.text):
                     stats["non_english"] += 1
                     continue
 
-                # Skip if fewer than min_words after cleaning
+                # 2. Reject Hinglish (romanised Hindi)
+                if self._is_hinglish(record.text):
+                    stats["hinglish"] += 1
+                    continue
+
+                # 3. Reject abusive / derogatory / NSFW content
+                if self._is_abusive(record.text):
+                    stats["abusive"] += 1
+                    continue
+
+                # 4. Reject too short
                 if record.word_count < self.min_words:
                     stats["too_short"] += 1
                     continue
 
-                # Skip gibberish / keyboard-mash reviews
+                # 5. Reject gibberish / keyboard-mash
                 if self._is_gibberish(record.text):
                     stats["gibberish"] += 1
+                    continue
+
+                # 6. Reject excessive word repetition (TT RR er RR r dear er RR)
+                if self._is_repetitive(record.text):
+                    stats["repetition"] += 1
                     continue
 
                 records.append(record)
                 stats["valid"] += 1
 
-                # Cap at max_reviews
                 if len(records) >= self.max_reviews:
                     logger.info("Hit MAX_REVIEWS cap (%d)", self.max_reviews)
                     break
@@ -186,8 +235,10 @@ class ReviewIngestionAgent:
                 logger.warning("Skipping malformed review: %s", exc)
 
         logger.info(
-            "Normalization: %d valid, %d non-English, %d too-short (<6 words), %d gibberish",
-            stats["valid"], stats["non_english"], stats["too_short"], stats["gibberish"],
+            "Normalization: %d valid | %d non-English | %d hinglish | "
+            "%d abusive | %d too-short | %d gibberish | %d repetitive",
+            stats["valid"], stats["non_english"], stats["hinglish"],
+            stats["abusive"], stats["too_short"], stats["gibberish"], stats["repetition"],
         )
         return records
 
@@ -224,8 +275,45 @@ class ReviewIngestionAgent:
         non_latin_chars = NON_LATIN_PATTERN.findall(text)
         if not text.strip():
             return True
-        # If >20% of chars are non-Latin, treat as non-English
         return len(non_latin_chars) / max(len(text.strip()), 1) > 0.2
+
+    @staticmethod
+    def _is_hinglish(text: str) -> bool:
+        """Detect romanised Hindi (Hinglish) like 'bilkul farzi app hai'."""
+        words = text.lower().split()
+        if not words:
+            return False
+        hinglish_count = sum(1 for w in words if w.strip(".,!?") in _HINGLISH_WORDS)
+        # If >25% of words are Hinglish, reject
+        return hinglish_count / len(words) > 0.25
+
+    @staticmethod
+    def _is_abusive(text: str) -> bool:
+        """Detect abusive, derogatory, or NSFW content."""
+        words = set(text.lower().split())
+        cleaned = {w.strip(".,!?\"'") for w in words}
+        return bool(cleaned & _ABUSIVE_WORDS)
+
+    @staticmethod
+    def _is_repetitive(text: str) -> bool:
+        """Detect spam repetition like 'TT RR er RR r dear er RR rte tr RR'."""
+        words = text.lower().split()
+        if len(words) < 6:
+            return False
+        # Check for repeated short tokens (≤4 chars) appearing 3+ times
+        from collections import Counter
+        short_words = [w for w in words if len(w) <= 4]
+        if not short_words:
+            return False
+        counts = Counter(short_words)
+        most_common_count = counts.most_common(1)[0][1]
+        # If a short word repeats 3+ times in the review, it's spam
+        if most_common_count >= 3:
+            return True
+        # Also catch regex-level repetition pattern
+        if REPETITION_PATTERN.search(text.lower()):
+            return True
+        return False
 
     @staticmethod
     def _is_gibberish(text: str) -> bool:
@@ -233,30 +321,26 @@ class ReviewIngestionAgent:
         Detect nonsense reviews like 'kks x zlvn bvlll n km cc k kkkkffcc'.
 
         Rules:
-          1. If avg word length < 2.5 — mostly single/double char tokens
-          2. If >60% of words are non-dictionary (no vowels or too consonant-heavy)
-          3. If no common English word found in a review with 8+ words
+          1. Avg word length < 2.5 — mostly single/double char tokens
+          2. >60% of words have no vowels or are too consonant-heavy
+          3. No common English word found in a review with 8+ words
         """
         words = text.lower().split()
         if not words:
             return True
 
-        # Rule 1: avg word length too short (gibberish tends to be 1-3 char tokens)
         avg_len = sum(len(w) for w in words) / len(words)
         if avg_len < 2.5:
             return True
 
-        # Rule 2: count words that look like real words (contain a vowel, length >= 3)
         vowels = set("aeiou")
         real_word_count = sum(
             1 for w in words
             if len(w) >= 3 and any(c in vowels for c in w)
         )
-        real_ratio = real_word_count / len(words)
-        if real_ratio < 0.35:
+        if real_word_count / len(words) < 0.35:
             return True
 
-        # Rule 3: for longer reviews, require at least one recognisable English word
         if len(words) >= 8:
             has_english = any(w.strip(".,!?") in _COMMON_ENGLISH for w in words)
             if not has_english:
