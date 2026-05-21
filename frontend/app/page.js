@@ -106,7 +106,7 @@ export default function Dashboard() {
           <ReviewReplayTab reviews={review_replay} />
         )}
         {activeTab === 'pulse' && (
-          <PulseTab pulse={pulse} />
+          <PulseTab pulse={pulse} onDataRefresh={fetchDashboard} />
         )}
       </main>
     </div>
@@ -288,15 +288,94 @@ function ReviewReplayTab({ reviews }) {
   );
 }
 
-function PulseTab({ pulse }) {
+function PulseTab({ pulse, onDataRefresh }) {
   const [publishing, setPublishing] = useState(false);
   const [publishStatus, setPublishStatus] = useState(null);
+  const [running, setRunning] = useState(false);
+  const [runStatus, setRunStatus] = useState(null);
+  const [pollProgress, setPollProgress] = useState(null);
+
+  const handleRunPipeline = async () => {
+    setRunning(true);
+    setRunStatus(null);
+    setPollProgress('Starting pipeline...');
+    try {
+      const res = await fetch(`${API_BASE}/pipeline/run`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ app_id: 'com.nextbillion.groww', weeks: 4 }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Failed to start pipeline');
+
+      const runId = data.pipeline_run_id;
+      setPollProgress('Pipeline running... (this takes 2–5 min due to rate limits)');
+
+      // Poll status every 10 seconds for up to 10 minutes
+      let attempts = 0;
+      const maxAttempts = 60;
+      const poll = setInterval(async () => {
+        attempts++;
+        try {
+          const statusRes = await fetch(`${API_BASE}/pipeline/status/${runId}`);
+          const statusData = await statusRes.json();
+          const status = statusData.status;
+
+          if (status === 'completed') {
+            clearInterval(poll);
+            setPollProgress(null);
+            setRunStatus({ type: 'success', msg: 'Pipeline complete! Refreshing data...' });
+            setRunning(false);
+            // Reload dashboard data
+            setTimeout(() => {
+              onDataRefresh();
+              setRunStatus({ type: 'success', msg: 'Data updated successfully.' });
+            }, 1000);
+          } else if (status === 'failed') {
+            clearInterval(poll);
+            setPollProgress(null);
+            setRunStatus({ type: 'error', msg: `Pipeline failed: ${statusData.error_log || 'Unknown error'}` });
+            setRunning(false);
+          } else if (attempts >= maxAttempts) {
+            clearInterval(poll);
+            setPollProgress(null);
+            setRunStatus({ type: 'error', msg: 'Pipeline timed out after 10 minutes. Check backend logs.' });
+            setRunning(false);
+          } else {
+            // Still running — update progress message
+            const elapsed = Math.round(attempts * 10 / 60);
+            setPollProgress(`Pipeline running... ${elapsed}m elapsed (status: ${status})`);
+          }
+        } catch {
+          // Network hiccup — keep polling
+        }
+      }, 10000);
+
+    } catch (err) {
+      setRunStatus({ type: 'error', msg: err.message });
+      setPollProgress(null);
+      setRunning(false);
+    }
+  };
 
   if (!pulse || !pulse.markdown) {
     return (
       <div className="empty-state">
         <p>📋 No pulse report generated yet.</p>
         <p style={{ marginTop: 8 }}>Run the pipeline to generate a weekly pulse.</p>
+        <button className="action-btn" style={{ marginTop: 16 }} onClick={handleRunPipeline} disabled={running}>
+          {running ? '⏳ Running...' : '▶ Run Pipeline Now'}
+        </button>
+        {pollProgress && (
+          <p style={{ marginTop: 12, fontSize: '0.85rem', color: 'var(--text-muted)' }}>
+            ⏳ {pollProgress}
+          </p>
+        )}
+        {runStatus && (
+          <p style={{ marginTop: 12, fontSize: '0.85rem', color: runStatus.type === 'error' ? 'var(--negative)' : 'var(--positive)' }}>
+            {runStatus.msg}
+          </p>
+        )}
       </div>
     );
   }
@@ -338,11 +417,29 @@ function PulseTab({ pulse }) {
           </div>
         </div>
         <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
+          {pollProgress && (
+            <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+              ⏳ {pollProgress}
+            </span>
+          )}
+          {runStatus && !pollProgress && (
+            <span style={{ fontSize: '0.8rem', color: runStatus.type === 'error' ? 'var(--negative)' : 'var(--positive)' }}>
+              {runStatus.type === 'error' ? '❌ ' : '✅ '}{runStatus.msg}
+            </span>
+          )}
           {publishStatus && (
             <span style={{ fontSize: '0.8rem', color: publishStatus.type === 'error' ? 'var(--negative)' : 'var(--positive)' }}>
               {publishStatus.type === 'error' ? '❌ ' : '✅ '}{publishStatus.msg}
             </span>
           )}
+          <button
+            className="action-btn outline"
+            onClick={handleRunPipeline}
+            disabled={running}
+            title="Fetch latest reviews and regenerate pulse"
+          >
+            {running ? '⏳ Running...' : '🔄 Refresh Now'}
+          </button>
           <button 
             className="action-btn" 
             onClick={() => handlePublish('google_docs')}

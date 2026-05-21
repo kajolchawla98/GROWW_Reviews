@@ -47,15 +47,30 @@ class PipelineRunner:
         self.sentiment_agent = SentimentEmotionAgent()
         self.vector_store = VectorStoreService()
 
-    def run(self, app_id: str = "com.nextbillion.groww", weeks: int = 4) -> dict:
-        """Execute the full pipeline."""
-        run = PipelineRun(
-            status="running",
-            config={"app_id": app_id, "weeks": weeks, "phase": "1+2+3"},
-        )
-        self.db.add(run)
-        self.db.commit()
-        self.db.refresh(run)
+    def run(self, app_id: str = "com.nextbillion.groww", weeks: int = 4, run_id: str = None) -> dict:
+        """Execute the full pipeline.
+
+        If run_id is provided (pre-created by the API route), update that record
+        instead of creating a new one — so status polling works correctly.
+        """
+        if run_id:
+            run = self.db.query(PipelineRun).filter(PipelineRun.id == run_id).first()
+            if run:
+                run.status = "running"
+                run.config = {"app_id": app_id, "weeks": weeks, "phase": "1+2+3"}
+                self.db.commit()
+            else:
+                run_id = None  # fallback: create fresh
+
+        if not run_id:
+            run = PipelineRun(
+                status="running",
+                config={"app_id": app_id, "weeks": weeks, "phase": "1+2+3"},
+            )
+            self.db.add(run)
+            self.db.commit()
+            self.db.refresh(run)
+
         logger.info("Pipeline run started: %s", run.id)
 
         try:

@@ -10,36 +10,73 @@ on:
 jobs:
   run-pipeline:
     runs-on: ubuntu-latest
-    
+
     steps:
+      - name: Validate secrets
+        run: |
+          if [ -z "${{ secrets.API_URL }}" ]; then
+            echo "::error::API_URL secret is not set. Go to repo Settings → Secrets → Actions and add API_URL."
+            exit 1
+          fi
+          echo "::notice::API_URL is configured"
+
       - name: Trigger Pipeline
         id: trigger
         run: |
-          # Trigger the pipeline via API
-          response=$(curl -X POST ${{ secrets.API_URL }}/api/v1/pipeline/run \
+          response=$(curl -X POST "${{ secrets.API_URL }}/api/v1/pipeline/run" \
             -H "Content-Type: application/json" \
             -d '{"app_id": "com.nextbillion.groww", "weeks": 4}' \
             -w "\nHTTP_STATUS:%{http_code}" \
-            -s)
-          
+            -s --max-time 30)
+
           echo "Response: $response"
-          
-          # Extract HTTP status
+
           http_status=$(echo "$response" | grep "HTTP_STATUS" | cut -d: -f2)
-          
+          body=$(echo "$response" | grep -v "HTTP_STATUS")
+
           if [ "$http_status" != "202" ]; then
             echo "::error::Pipeline trigger failed with HTTP status: $http_status"
+            echo "::error::Response body: $body"
             exit 1
           fi
-          
-          echo "::notice::Pipeline triggered successfully"
+
+          # Extract pipeline_run_id from JSON response
+          run_id=$(echo "$body" | python3 -c "import sys, json; print(json.load(sys.stdin).get('pipeline_run_id', ''))" 2>/dev/null || echo "")
+          echo "run_id=$run_id" >> $GITHUB_OUTPUT
+          echo "::notice::Pipeline triggered successfully. Run ID: $run_id"
         env:
           API_URL: ${{ secrets.API_URL }}
-      
+
       - name: Wait for Pipeline Completion
-        if: success()
+        if: success() && steps.trigger.outputs.run_id != ''
         run: |
-          # Extract pipeline_run_id from previous step
-          # In production, you might want to poll the status endpoint
-          echo "Pipeline is running in the background"
-          echo "Check your dashboard for results"
+          RUN_ID="${{ steps.trigger.outputs.run_id }}"
+          echo "Polling status for pipeline run: $RUN_ID"
+
+          # Poll every 30 seconds for up to 15 minutes (30 attempts)
+          for i in $(seq 1 30); do
+            sleep 30
+            echo "Attempt $i/30 — checking status..."
+
+            status_response=$(curl -s --max-time 15 \
+              "${{ secrets.API_URL }}/api/v1/pipeline/status/$RUN_ID" || echo '{"status":"unknown"}')
+
+            status=$(echo "$status_response" | python3 -c "import sys, json; print(json.load(sys.stdin).get('status', 'unknown'))" 2>/dev/null || echo "unknown")
+            echo "Pipeline status: $status"
+
+            if [ "$status" = "completed" ]; then
+              echo "::notice::Pipeline completed successfully"
+              exit 0
+            fi
+
+            if [ "$status" = "failed" ]; then
+              error=$(echo "$status_response" | python3 -c "import sys, json; print(json.load(sys.stdin).get('error_log', 'No error details'))" 2>/dev/null || echo "No error details")
+              echo "::error::Pipeline failed: $error"
+              exit 1
+            fi
+          done
+
+          echo "::warning::Pipeline did not complete within 15 minutes — it may still be running"
+          exit 1
+        env:
+          API_URL: ${{ secrets.API_URL }}

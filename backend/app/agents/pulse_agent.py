@@ -9,7 +9,7 @@ Responsibilities:
 """
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import List
 
 from sqlalchemy import func
@@ -41,7 +41,9 @@ class WeeklyPulseGeneratorAgent:
     ) -> PulseReport:
         """Generate the weekly pulse report."""
         now = datetime.now(timezone.utc)
-        week_label = now.strftime("Week of %B %d, %Y")
+        # Anchor to Monday of the current week so the label is stable all week
+        monday = now - timedelta(days=now.weekday())
+        week_label = monday.strftime("Week of %B %d, %Y")
 
         total_reviews = self.db.query(Review).count()
         avg_sentiment = self.db.query(func.avg(Sentiment.sentiment_score)).scalar() or 0.0

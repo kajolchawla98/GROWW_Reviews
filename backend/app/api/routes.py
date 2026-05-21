@@ -37,7 +37,7 @@ def _run_pipeline_background(app_id: str, weeks: int, run_id: str):
     db = SessionLocal()
     try:
         runner = PipelineRunner(db)
-        runner.run(app_id=app_id, weeks=weeks)
+        runner.run(app_id=app_id, weeks=weeks, run_id=run_id)
     except Exception as exc:
         logger.error("Background pipeline failed: %s", exc)
     finally:
@@ -326,4 +326,21 @@ def health_check(db: Session = Depends(get_db)):
         db.execute(text("SELECT 1")); db_status = "connected"
     except Exception:
         db_status = "error"
-    return {"status": "healthy" if db_status == "connected" else "degraded", "database": db_status, "version": "0.3.0"}
+
+    # Include last pipeline run info so the frontend can show staleness
+    last_run = db.query(PipelineRun).order_by(PipelineRun.started_at.desc()).first()
+    last_pulse = db.query(PulseRecord).order_by(PulseRecord.generated_at.desc()).first()
+
+    return {
+        "status": "healthy" if db_status == "connected" else "degraded",
+        "database": db_status,
+        "version": "0.3.0",
+        "last_pipeline_run": {
+            "id": last_run.id if last_run else None,
+            "status": last_run.status if last_run else None,
+            "started_at": last_run.started_at.isoformat() if last_run and last_run.started_at else None,
+            "completed_at": last_run.completed_at.isoformat() if last_run and last_run.completed_at else None,
+            "error_log": last_run.error_log if last_run else None,
+        } if last_run else None,
+        "last_pulse_generated_at": last_pulse.generated_at.isoformat() if last_pulse and last_pulse.generated_at else None,
+    }
