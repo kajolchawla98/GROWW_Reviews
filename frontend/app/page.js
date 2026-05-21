@@ -316,8 +316,13 @@ function PulseTab({ pulse, onDataRefresh }) {
       const maxAttempts = 60;
       const poll = setInterval(async () => {
         attempts++;
+        const elapsed = Math.round(attempts * 10 / 60);
         try {
           const statusRes = await fetch(`${API_BASE}/pipeline/status/${runId}`);
+          if (!statusRes.ok) {
+            setPollProgress(`Pipeline running... ${elapsed}m elapsed (checking...)`);
+            return;
+          }
           const statusData = await statusRes.json();
           const status = statusData.status;
 
@@ -326,7 +331,6 @@ function PulseTab({ pulse, onDataRefresh }) {
             setPollProgress(null);
             setRunStatus({ type: 'success', msg: 'Pipeline complete! Refreshing data...' });
             setRunning(false);
-            // Reload dashboard data
             setTimeout(() => {
               onDataRefresh();
               setRunStatus({ type: 'success', msg: 'Data updated successfully.' });
@@ -342,12 +346,11 @@ function PulseTab({ pulse, onDataRefresh }) {
             setRunStatus({ type: 'error', msg: 'Pipeline timed out after 10 minutes. Check backend logs.' });
             setRunning(false);
           } else {
-            // Still running — update progress message
-            const elapsed = Math.round(attempts * 10 / 60);
-            setPollProgress(`Pipeline running... ${elapsed}m elapsed (status: ${status})`);
+            setPollProgress(`Pipeline running... ${elapsed}m elapsed (status: ${status || 'running'})`);
           }
         } catch {
-          // Network hiccup — keep polling
+          // Network hiccup — keep polling silently
+          setPollProgress(`Pipeline running... ${elapsed}m elapsed (checking...)`);
         }
       }, 10000);
 
