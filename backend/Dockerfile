@@ -20,6 +20,7 @@ COPY . .
 # Create data directory for SQLite
 RUN mkdir -p /app/data
 
-EXPOSE 8000
+EXPOSE 8080
 
-CMD uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}
+# Shell form ensures $PORT is expanded from Railway's runtime env
+CMD uvicorn app.main:app --host 0.0.0.0 --port $PORT --workers 1 --log-level info
