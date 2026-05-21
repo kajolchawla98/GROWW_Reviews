@@ -70,6 +70,32 @@ NON_LATIN_PATTERN = re.compile(
     r"]"
 )
 
+# Common English words — used to verify a review has real English content
+_COMMON_ENGLISH = {
+    "the", "is", "are", "was", "were", "be", "been", "being",
+    "have", "has", "had", "do", "does", "did", "will", "would",
+    "could", "should", "may", "might", "shall", "can", "need",
+    "i", "my", "me", "we", "our", "you", "your", "it", "its",
+    "this", "that", "these", "those", "a", "an", "and", "or",
+    "but", "not", "no", "so", "if", "in", "on", "at", "to",
+    "for", "of", "with", "by", "from", "up", "about", "into",
+    "app", "good", "bad", "great", "worst", "best", "nice",
+    "very", "too", "also", "just", "only", "more", "most",
+    "use", "used", "using", "work", "works", "working",
+    "please", "thank", "thanks", "help", "issue", "problem",
+    "money", "account", "bank", "fund", "stock", "invest",
+    "update", "new", "old", "time", "day", "month", "year",
+    "get", "got", "give", "take", "make", "made", "see", "know",
+    "go", "come", "back", "out", "now", "still", "even", "after",
+    "before", "since", "when", "where", "how", "why", "what",
+    "which", "who", "all", "some", "any", "one", "two", "three",
+    "service", "support", "customer", "team", "response", "fix",
+    "error", "login", "password", "otp", "kyc", "payment",
+    "transaction", "charge", "fee", "rate", "return", "loss",
+    "profit", "portfolio", "mutual", "sip", "ipo", "nifty",
+    "sensex", "broker", "demat", "trading", "order", "buy", "sell",
+}
+
 
 class ReviewIngestionAgent:
     """
@@ -127,13 +153,13 @@ class ReviewIngestionAgent:
 
         # Normalize and filter
         records: List[ReviewRecord] = []
-        stats = {"emoji_only": 0, "non_english": 0, "too_short": 0, "valid": 0}
+        stats = {"emoji_only": 0, "non_english": 0, "too_short": 0, "gibberish": 0, "valid": 0}
 
         for raw in dated:
             try:
                 record = self._to_review_record(raw)
 
-                # Skip if non-English characters detected
+                # Skip if non-English characters detected (Hindi, Arabic, etc.)
                 if self._has_non_latin(record.text):
                     stats["non_english"] += 1
                     continue
@@ -141,6 +167,11 @@ class ReviewIngestionAgent:
                 # Skip if fewer than min_words after cleaning
                 if record.word_count < self.min_words:
                     stats["too_short"] += 1
+                    continue
+
+                # Skip gibberish / keyboard-mash reviews
+                if self._is_gibberish(record.text):
+                    stats["gibberish"] += 1
                     continue
 
                 records.append(record)
@@ -155,8 +186,8 @@ class ReviewIngestionAgent:
                 logger.warning("Skipping malformed review: %s", exc)
 
         logger.info(
-            "Normalization: %d valid, %d non-English, %d too-short (<6 words), %d emoji-only",
-            stats["valid"], stats["non_english"], stats["too_short"], stats["emoji_only"],
+            "Normalization: %d valid, %d non-English, %d too-short (<6 words), %d gibberish",
+            stats["valid"], stats["non_english"], stats["too_short"], stats["gibberish"],
         )
         return records
 
@@ -195,6 +226,43 @@ class ReviewIngestionAgent:
             return True
         # If >20% of chars are non-Latin, treat as non-English
         return len(non_latin_chars) / max(len(text.strip()), 1) > 0.2
+
+    @staticmethod
+    def _is_gibberish(text: str) -> bool:
+        """
+        Detect nonsense reviews like 'kks x zlvn bvlll n km cc k kkkkffcc'.
+
+        Rules:
+          1. If avg word length < 2.5 — mostly single/double char tokens
+          2. If >60% of words are non-dictionary (no vowels or too consonant-heavy)
+          3. If no common English word found in a review with 8+ words
+        """
+        words = text.lower().split()
+        if not words:
+            return True
+
+        # Rule 1: avg word length too short (gibberish tends to be 1-3 char tokens)
+        avg_len = sum(len(w) for w in words) / len(words)
+        if avg_len < 2.5:
+            return True
+
+        # Rule 2: count words that look like real words (contain a vowel, length >= 3)
+        vowels = set("aeiou")
+        real_word_count = sum(
+            1 for w in words
+            if len(w) >= 3 and any(c in vowels for c in w)
+        )
+        real_ratio = real_word_count / len(words)
+        if real_ratio < 0.35:
+            return True
+
+        # Rule 3: for longer reviews, require at least one recognisable English word
+        if len(words) >= 8:
+            has_english = any(w.strip(".,!?") in _COMMON_ENGLISH for w in words)
+            if not has_english:
+                return True
+
+        return False
 
     @staticmethod
     def clean_text(text: str) -> str:
