@@ -5,6 +5,7 @@ Entry point for the backend server.
 """
 
 import logging
+import threading
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -49,10 +50,46 @@ app.include_router(router)
 # ── Startup Event ────────────────────────────────────────────────────
 @app.on_event("startup")
 def on_startup():
-    """Initialise database tables on first run."""
+    """Initialise database tables on first run, then seed data if empty."""
     logger.info("Starting %s v%s", settings.APP_NAME, settings.APP_VERSION)
     init_db()
     logger.info("Database initialised")
+
+    # If DB is empty (fresh deploy), auto-run the pipeline in background
+    # so the dashboard has data without anyone needing to click a button
+    _auto_seed_if_empty()
+
+
+def _auto_seed_if_empty():
+    """Trigger pipeline automatically if no reviews exist yet."""
+    try:
+        from app.models.database import SessionLocal, Review
+        db = SessionLocal()
+        count = db.query(Review).count()
+        db.close()
+        if count == 0:
+            logger.info("DB is empty — auto-seeding pipeline on startup")
+            thread = threading.Thread(target=_run_seed_pipeline, daemon=True)
+            thread.start()
+        else:
+            logger.info("DB has %d reviews — skipping auto-seed", count)
+    except Exception as exc:
+        logger.warning("Auto-seed check failed: %s", exc)
+
+
+def _run_seed_pipeline():
+    """Run the full pipeline in a background thread on first startup."""
+    try:
+        from app.models.database import SessionLocal
+        from app.services.pipeline_runner import PipelineRunner
+        db = SessionLocal()
+        runner = PipelineRunner(db)
+        runner.run(app_id=settings.GROWW_APP_ID, weeks=settings.REVIEW_WEEKS)
+        logger.info("Auto-seed pipeline completed successfully")
+    except Exception as exc:
+        logger.error("Auto-seed pipeline failed: %s", exc)
+    finally:
+        db.close()
 
 
 # ── Root ─────────────────────────────────────────────────────────────
