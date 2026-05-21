@@ -384,7 +384,8 @@ function PulseTab({ pulse, onDataRefresh }) {
     setPublishing(true);
     setPublishStatus(null);
     try {
-      const res = await fetch(`${API_BASE}/pulses/${pulse.pulse_id}/publish?target=${target}`, {
+      // Always use "latest" so it works even after a redeploy resets the DB
+      const res = await fetch(`${API_BASE}/pulses/latest/publish?target=${target}`, {
         method: 'POST'
       });
       const data = await res.json();

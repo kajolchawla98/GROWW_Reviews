@@ -201,9 +201,19 @@ async def publish_pulse(
     db: Session = Depends(get_db)
 ):
     from app.agents.publishing_agent import PublishingAgent
+
+    # If pulse_id is "latest" or the specific ID isn't found, fall back to latest pulse
+    pulse = db.query(PulseRecord).filter(
+        (PulseRecord.id == pulse_id) | (PulseRecord.pulse_id == pulse_id)
+    ).first()
+    if not pulse:
+        pulse = db.query(PulseRecord).order_by(PulseRecord.generated_at.desc()).first()
+    if not pulse:
+        raise HTTPException(status_code=404, detail="No pulse report found — run the pipeline first")
+
     agent = PublishingAgent(db)
     try:
-        result = await agent.publish_pulse(pulse_id, target=target)
+        result = await agent.publish_pulse(pulse.pulse_id or pulse.id, target=target)
         return result
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -304,7 +314,7 @@ def dashboard_data(db: Session = Depends(get_db)):
         "recommendations": rec_data,
         "review_replay": review_replay,
         "pulse": {
-            "pulse_id": pulse.id if pulse else None,
+            "pulse_id": pulse.pulse_id if pulse else None,
             "week_label": pulse.week_label if pulse else None,
             "markdown": pulse.markdown_content if pulse else None,
             "generated_at": pulse.generated_at.isoformat() if pulse else None,
